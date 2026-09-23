@@ -34,10 +34,12 @@ type OneTimePreKey struct {
 }
 
 type Room struct {
-	ID        string    `json:"id"`
-	User1ID   string    `json:"user1_id"`
-	User2ID   string    `json:"user2_id"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	User1ID       string    `json:"user1_id"`
+	User2ID       string    `json:"user2_id"`
+	User1Username string    `json:"user1_username,omitempty"`
+	User2Username string    `json:"user2_username,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Message struct {
@@ -276,6 +278,13 @@ type FileDownloadedPayload struct {
 
 type DeleteMessagePayload struct {
 	MessageID string `json:"message_id"`
+}
+
+// MediaViewedPayload — the receiver has viewed a media message; destroy it everywhere.
+// ThumbnailKey is the thumbnail's S3 key (the server only stores it encrypted).
+type MediaViewedPayload struct {
+	MessageID    string `json:"message_id"`
+	ThumbnailKey string `json:"thumbnail_key"`
 }
 
 type MarkReadPayload struct {

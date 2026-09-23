@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/filetransfer/backend/internal/models"
 	"github.com/filetransfer/backend/internal/services"
@@ -151,6 +152,14 @@ func (h *Handler) handleMessage(client *Client, wsMsg models.WSMessage) {
 		}
 		h.handleDeleteMessage(ctx, client, payload)
 
+	case "media_viewed":
+		var payload models.MediaViewedPayload
+		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+			log.Printf("Invalid media_viewed payload: %v", err)
+			return
+		}
+		h.handleMediaViewed(ctx, client, payload)
+
 	case "mark_read":
 		var payload models.MarkReadPayload
 		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
@@ -187,7 +196,13 @@ func (h *Handler) handleTextMessage(ctx context.Context, client *Client, payload
 		return
 	}
 
-	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, "text")
+	// "location" carries an encrypted "lat,lng" body; everything else is plain text.
+	msgType := "text"
+	if payload.MessageType == "location" {
+		msgType = "location"
+	}
+
+	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, msgType)
 	if err != nil {
 		log.Printf("Failed to store message: %v", err)
 		return
@@ -328,6 +343,60 @@ func (h *Handler) handleDeleteMessage(ctx context.Context, client *Client, paylo
 	h.hub.SendToUser(receiverID, deleteNotif)
 }
 
+// handleMediaViewed destroys a view-once media message after its receiver has seen
+// it: S3 objects (file + thumbnail), the DB row, and both clients' local copies via
+// message_deleted. Offline participants get the notification on their next connect.
+func (h *Handler) handleMediaViewed(ctx context.Context, client *Client, payload models.MediaViewedPayload) {
+	msg, err := h.msgSvc.GetMessageByID(ctx, payload.MessageID)
+	if err != nil {
+		// Already destroyed (e.g. retried after a reconnect) — make sure the caller drops it too
+		h.hub.SendToUser(client.UserID, models.WSMessage{
+			Type:    "message_deleted",
+			Payload: map[string]any{"message_id": payload.MessageID, "reason": "media_viewed"},
+		})
+		return
+	}
+	if msg.ReceiverID != client.UserID || msg.MessageType != "file" {
+		log.Printf("media_viewed rejected: user %s on message %s", client.UserID, payload.MessageID)
+		return
+	}
+
+	// S3: the attachment, plus its thumbnail if the key belongs to the sender's uploads
+	keys := []string{}
+	if ft, ftErr := h.msgSvc.GetFileTransferForMessage(ctx, msg.ID); ftErr == nil {
+		keys = append(keys, ft.S3Key)
+	}
+	if payload.ThumbnailKey != "" &&
+		strings.HasPrefix(payload.ThumbnailKey, "uploads/"+msg.SenderID+"/") &&
+		!strings.Contains(payload.ThumbnailKey, "..") {
+		keys = append(keys, payload.ThumbnailKey)
+	}
+	h.fileSvc.DeleteUploadObjects(ctx, keys...)
+
+	if err := h.msgSvc.DeleteMessageByID(ctx, msg.ID); err != nil {
+		log.Printf("media_viewed: failed to delete message %s: %v", msg.ID, err)
+		return
+	}
+
+	notif := models.WSMessage{
+		Type: "message_deleted",
+		Payload: map[string]any{
+			"message_id":        msg.ID,
+			"client_message_id": msg.ClientMessageID,
+			"room_id":           msg.RoomID,
+			"reason":            "media_viewed",
+		},
+	}
+	for _, uid := range []string{msg.SenderID, msg.ReceiverID} {
+		if !h.hub.SendToUser(uid, notif) {
+			if err := h.msgSvc.QueueDeletion(ctx, uid, msg.ID, msg.ClientMessageID, msg.RoomID); err != nil {
+				log.Printf("media_viewed: failed to queue deletion for %s: %v", uid, err)
+			}
+		}
+	}
+	log.Printf("media_viewed: destroyed message %s (%d S3 objects)", msg.ID, len(keys))
+}
+
 func (h *Handler) handleMarkRead(ctx context.Context, client *Client, payload models.MarkReadPayload) {
 	var receipts []services.ReadReceipt
 	var err error
@@ -417,6 +486,25 @@ func (h *Handler) handleSecureFile(ctx context.Context, client *Client, payload 
 
 func (h *Handler) deliverPendingMessages(client *Client) {
 	ctx := context.Background()
+
+	// Replay view-once deletions that happened while this user was offline
+	if deletions, err := h.msgSvc.GetPendingDeletions(ctx, client.UserID); err == nil {
+		for _, d := range deletions {
+			if h.hub.SendToUser(client.UserID, models.WSMessage{
+				Type: "message_deleted",
+				Payload: map[string]any{
+					"message_id":        d.MessageID,
+					"client_message_id": d.ClientMessageID,
+					"room_id":           d.RoomID,
+					"reason":            "media_viewed",
+				},
+			}) {
+				_ = h.msgSvc.ClearPendingDeletion(ctx, d.ID)
+			}
+		}
+	} else {
+		log.Printf("Failed to fetch pending deletions for user %s: %v", client.UserID, err)
+	}
 	messages, err := h.msgSvc.GetPendingMessages(ctx, client.UserID)
 	if err != nil {
 		log.Printf("Failed to fetch pending messages for user %s: %v", client.UserID, err)

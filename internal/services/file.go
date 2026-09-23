@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -78,6 +79,31 @@ func (s *FileService) GetPresignedDownloadURL(ctx context.Context, s3Key string)
 	return req.URL, nil
 }
 
+// CanAccessUploadKey reports whether callerID may download an object stored under
+// uploads/<ownerID>/...: the caller must be the owner or share a room with them.
+// Used to presign downloads of attachment and thumbnail objects, whose keys the
+// server cannot map to a file_transfers row (the thumbnail key is sent encrypted).
+func (s *FileService) CanAccessUploadKey(ctx context.Context, callerID, s3Key string) bool {
+	parts := strings.SplitN(s3Key, "/", 3)
+	if len(parts) != 3 || parts[0] != "uploads" || parts[1] == "" || parts[2] == "" ||
+		strings.Contains(s3Key, "..") {
+		return false
+	}
+	ownerID := parts[1]
+	if ownerID == callerID {
+		return true
+	}
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM rooms
+			WHERE (user1_id::text = $1 AND user2_id::text = $2)
+			   OR (user1_id::text = $2 AND user2_id::text = $1)
+		)
+	`, callerID, ownerID).Scan(&exists)
+	return err == nil && exists
+}
+
 // GetFileTransfer returns a file transfer and the receiver ID of its associated message.
 func (s *FileService) GetFileTransfer(ctx context.Context, fileTransferID string) (*models.FileTransfer, string, error) {
 	var ft models.FileTransfer
@@ -147,23 +173,24 @@ func (s *FileService) MarkDownloadedAndDelete(ctx context.Context, fileTransferI
 		return errors.New("unauthorized: only the receiver can trigger deletion")
 	}
 
-	bucket := ft.Bucket
-	if bucket == "" {
-		bucket = s.bucket
-	}
+	// ft.Bucket / ft.Thumbnail are client-encrypted values, not usable S3 names.
+	// Uploads are always presigned for s.bucket, so delete from there.
+	s.DeleteUploadObjects(ctx, ft.S3Key)
+	return nil
+}
 
-	keys := []string{ft.S3Key}
-	if ft.Thumbnail != "" && ft.Thumbnail != ft.S3Key {
-		keys = append(keys, ft.Thumbnail)
-	}
-
+// DeleteUploadObjects deletes objects from the configured bucket, logging failures.
+// Deleting a key that no longer exists is a no-op on S3.
+func (s *FileService) DeleteUploadObjects(ctx context.Context, keys ...string) {
 	for _, key := range keys {
-		if _, delErr := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(bucket),
+		if key == "" {
+			continue
+		}
+		if _, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(s.bucket),
 			Key:    aws.String(key),
-		}); delErr != nil {
-			log.Printf("Warning: failed to delete S3 object %s: %v", key, delErr)
+		}); err != nil {
+			log.Printf("Warning: failed to delete S3 object %s: %v", key, err)
 		}
 	}
-	return nil
 }

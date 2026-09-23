@@ -28,6 +28,36 @@ func (s *MessageService) GetUserByID(ctx context.Context, userID string) (*model
 	return &user, nil
 }
 
+// ListUsers returns the users excludeID can start a new chat with: everyone except
+// themselves and anyone they already share a room with, ordered by username.
+// Used by the client's "new chat" picker.
+func (s *MessageService) ListUsers(ctx context.Context, excludeID string) ([]models.User, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id, u.username, u.created_at FROM users u
+		WHERE u.id::text <> $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM rooms r
+			WHERE (r.user1_id = u.id AND r.user2_id::text = $1)
+			   OR (r.user2_id = u.id AND r.user1_id::text = $1)
+		  )
+		ORDER BY u.username
+	`, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := []models.User{}
+	for rows.Next() {
+		var u models.User
+		if err := rows.Scan(&u.ID, &u.Username, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // GetOrCreateRoom finds an existing room between two users, or creates one.
 // It always stores the smaller UUID as user1_id to ensure uniqueness.
 func (s *MessageService) GetOrCreateRoom(ctx context.Context, userA, userB string) (*models.Room, error) {
@@ -52,10 +82,12 @@ func (s *MessageService) GetOrCreateRoom(ctx context.Context, userA, userB strin
 // GetRoomsForUser returns all rooms a user belongs to.
 func (s *MessageService) GetRoomsForUser(ctx context.Context, userID string) ([]models.Room, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user1_id, user2_id, created_at
-		FROM rooms
-		WHERE user1_id = $1 OR user2_id = $1
-		ORDER BY created_at DESC
+		SELECT r.id, r.user1_id, r.user2_id, u1.username, u2.username, r.created_at
+		FROM rooms r
+		JOIN users u1 ON u1.id = r.user1_id
+		JOIN users u2 ON u2.id = r.user2_id
+		WHERE r.user1_id = $1 OR r.user2_id = $1
+		ORDER BY r.created_at DESC
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -65,7 +97,7 @@ func (s *MessageService) GetRoomsForUser(ctx context.Context, userID string) ([]
 	var rooms []models.Room
 	for rows.Next() {
 		var r models.Room
-		if err := rows.Scan(&r.ID, &r.User1ID, &r.User2ID, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.User1ID, &r.User2ID, &r.User1Username, &r.User2Username, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		rooms = append(rooms, r)
@@ -187,6 +219,58 @@ func (s *MessageService) DeleteMessage(ctx context.Context, messageID, senderID 
 		return fmt.Errorf("message not found or not authorized")
 	}
 	return nil
+}
+
+// DeleteMessageByID hard-deletes a message (file_transfers cascade). No ownership
+// check — callers must authorize first.
+func (s *MessageService) DeleteMessageByID(ctx context.Context, messageID string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM messages WHERE id = $1`, messageID)
+	return err
+}
+
+// PendingDeletion is a message_deleted notification queued for an offline user.
+type PendingDeletion struct {
+	ID              string
+	MessageID       string
+	ClientMessageID string
+	RoomID          string
+}
+
+// QueueDeletion stores a message_deleted notification to replay on userID's next connect.
+func (s *MessageService) QueueDeletion(ctx context.Context, userID, messageID, clientMessageID, roomID string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO pending_deletions (user_id, message_id, client_message_id, room_id)
+		VALUES ($1, $2, $3, $4)
+	`, userID, messageID, clientMessageID, roomID)
+	return err
+}
+
+// GetPendingDeletions returns queued message_deleted notifications for userID.
+func (s *MessageService) GetPendingDeletions(ctx context.Context, userID string) ([]PendingDeletion, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, message_id, client_message_id, room_id
+		FROM pending_deletions WHERE user_id = $1 ORDER BY created_at
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []PendingDeletion
+	for rows.Next() {
+		var p PendingDeletion
+		if err := rows.Scan(&p.ID, &p.MessageID, &p.ClientMessageID, &p.RoomID); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ClearPendingDeletion removes a delivered pending deletion.
+func (s *MessageService) ClearPendingDeletion(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM pending_deletions WHERE id = $1`, id)
+	return err
 }
 
 // GetMessageOwnership returns the sender_id and receiver_id for a message.

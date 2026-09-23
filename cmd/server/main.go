@@ -58,6 +58,7 @@ func main() {
 	protected.HandleFunc("POST /api/files/{fileTransferID}/downloaded", fileHandler.MarkDownloaded)
 	protected.HandleFunc("POST /api/files/{fileTransferID}/download", fileHandler.GetPresignedDownloadURL)
 	protected.HandleFunc("POST /api/files/presign", fileHandler.GetPresignedUploadURL)
+	protected.HandleFunc("POST /api/files/presign-download", fileHandler.PresignDownloadByKey)
 
 	// Secure File Transfer (multipart) — order matters: more-specific paths first
 	protected.HandleFunc("POST /api/files/multipart/initiate", multipartHandler.Initiate)
@@ -69,6 +70,8 @@ func main() {
 	protected.HandleFunc("GET /api/messages/unread", msgHandler.GetUnreadCounts)
 	protected.HandleFunc("GET /api/messages/{roomID}", msgHandler.GetMessages)
 	protected.HandleFunc("GET /api/rooms", msgHandler.GetRooms)
+	protected.HandleFunc("POST /api/rooms", msgHandler.CreateRoom)
+	protected.HandleFunc("GET /api/users", msgHandler.GetUsers)
 	protected.HandleFunc("POST /api/users/online", statusHandler.GetOnlineStatus)
 
 	mux.Handle("/api/", authMW(protected))

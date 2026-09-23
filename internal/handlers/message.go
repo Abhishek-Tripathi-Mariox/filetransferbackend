@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -99,6 +100,68 @@ func (h *MessageHandler) GetRooms(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rooms": rooms,
+	})
+}
+
+// GetUsers handles GET /api/users — users the caller has no chat with yet, for the
+// "new chat" picker.
+func (h *MessageHandler) GetUsers(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
+
+	users, err := h.msgSvc.ListUsers(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to fetch users"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users": users,
+	})
+}
+
+// CreateRoom handles POST /api/rooms — body { "user_id": "<uuid>" }.
+// Returns the existing room with that user, or creates it.
+func (h *MessageHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
+
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+		return
+	}
+	if req.UserID == userID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot start a chat with yourself"})
+		return
+	}
+
+	other, err := h.msgSvc.GetUserByID(r.Context(), req.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
+	me, err := h.msgSvc.GetUserByID(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load current user"})
+		return
+	}
+
+	room, err := h.msgSvc.GetOrCreateRoom(r.Context(), userID, req.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create room"})
+		return
+	}
+
+	// Fill usernames to match the GET /api/rooms shape
+	if room.User1ID == me.ID {
+		room.User1Username, room.User2Username = me.Username, other.Username
+	} else {
+		room.User1Username, room.User2Username = other.Username, me.Username
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"room": room,
 	})
 }
 

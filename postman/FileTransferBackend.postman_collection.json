@@ -1,0 +1,395 @@
+{
+  "info": {
+    "name": "FileTransfer Backend API",
+    "description": "Collection for the Go File Transfer backend. Import and test auth, rooms, key exchange, messages, and file APIs.",
+    "schema": "https://schema.getpostman.com/json/collection/v1.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "userId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "roomId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "targetUserId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "messageId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "uploadId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "fileTransferId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"newuser\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.token) {",
+                  "  pm.collectionVariables.set('authToken', json.token);",
+                  "}",
+                  "if (json.user_id) {",
+                  "  pm.collectionVariables.set('userId', json.user_id);",
+                  "}",
+                  "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rooms & Messaging",
+      "item": [
+        {
+          "name": "Get Rooms",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/rooms",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "rooms"]
+            }
+          }
+        },
+        {
+          "name": "Get Unread Counts",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages/unread",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "messages", "unread"]
+            }
+          }
+        },
+        {
+          "name": "Get Messages in Room",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages/{{roomId}}?limit=20",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "messages", "{{roomId}}"],
+              "query": [
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Keys",
+      "item": [
+        {
+          "name": "Upload Keys",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"registration_id\": 123,\n  \"device_id\": 1,\n  \"identity_key\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\",\n  \"signed_prekey\": {\n    \"key_id\": 1,\n    \"public_key\": \"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=\",\n    \"signature\": \"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=\"\n  },\n  \"one_time_prekeys\": [\n    {\n      \"key_id\": 101,\n      \"public_key\": \"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=\"\n    }\n  ],\n  \"kyber_prekeys\": [\n    {\n      \"key_id\": 201,\n      \"public_key\": \"EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE=\",\n      \"signature\": \"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/keys/upload",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "keys", "upload"]
+            }
+          }
+        },
+        {
+          "name": "Get Key Bundle",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/keys/bundle/{{targetUserId}}",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "keys", "bundle", "{{targetUserId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Key Counts",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/keys/count",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "keys", "count"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Generate Presigned Upload URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_name\": \"demo.txt\",\n  \"file_size\": 1234\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/presign",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "presign"]
+            }
+          }
+        },
+        {
+          "name": "Generate Presigned Download URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/{{fileTransferId}}/download",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "{{fileTransferId}}", "download"]
+            }
+          }
+        },
+        {
+          "name": "Mark File Downloaded",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/{{fileTransferId}}/downloaded",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "{{fileTransferId}}", "downloaded"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Multipart Uploads",
+      "item": [
+        {
+          "name": "Initiate Multipart Upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_size\": 1048576,\n  \"part_count\": 2,\n  \"part_size\": 524288,\n  \"content_type\": \"application/octet-stream\",\n  \"recipient_id\": \"{{targetUserId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/multipart/initiate",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "multipart", "initiate"]
+            }
+          }
+        },
+        {
+          "name": "Complete Multipart Upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"upload_id\": \"{{uploadId}}\",\n  \"object_key\": \"uploads/demo.txt\",\n  \"bucket\": \"your-bucket\",\n  \"parts\": [\n    {\n      \"part_number\": 1,\n      \"etag\": \"etag-1\"\n    },\n    {\n      \"part_number\": 2,\n      \"etag\": \"etag-2\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/multipart/complete",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "multipart", "complete"]
+            }
+          }
+        },
+        {
+          "name": "Abort Multipart Upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"upload_id\": \"{{uploadId}}\",\n  \"object_key\": \"uploads/demo.txt\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/multipart/abort",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "multipart", "abort"]
+            }
+          }
+        },
+        {
+          "name": "List Multipart Parts",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/multipart/{{uploadId}}/parts",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "multipart", "{{uploadId}}", "parts"]
+            }
+          }
+        },
+        {
+          "name": "Download Multipart File",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"object_key\": \"uploads/demo.txt\",\n  \"bucket\": \"your-bucket\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/files/multipart/download",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "multipart", "download"]
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/{{fileTransferId}}",
+              "protocol": "http",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "{{fileTransferId}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

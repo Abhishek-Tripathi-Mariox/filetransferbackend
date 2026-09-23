@@ -47,6 +47,40 @@ func (h *FileHandler) GetPresignedUploadURL(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{
 		"upload_url": presignedURL,
 		"s3_key":     s3Key,
+		"bucket":     h.fileSvc.Bucket(),
+		"region":     h.fileSvc.Region(),
+	})
+}
+
+// PresignDownloadByKey handles POST /api/files/presign-download
+// Body: { "s3_key": "uploads/<ownerID>/..." } → { "download_url": "..." }
+// The bucket is private, so clients fetch attachments/thumbnails through these
+// short-lived signed URLs.
+func (h *FileHandler) PresignDownloadByKey(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
+
+	var req struct {
+		S3Key string `json:"s3_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.S3Key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "s3_key is required"})
+		return
+	}
+
+	if !h.fileSvc.CanAccessUploadKey(r.Context(), userID, req.S3Key) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not authorized to download this object"})
+		return
+	}
+
+	downloadURL, err := h.fileSvc.GetPresignedDownloadURL(r.Context(), req.S3Key)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate download URL"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"download_url":       downloadURL,
+		"expires_in_seconds": 900,
 	})
 }
 

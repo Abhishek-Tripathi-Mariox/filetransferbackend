@@ -163,6 +163,18 @@ func RunMigrations(pool *pgxpool.Pool) {
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
 
+	-- message_deleted notifications for users who were offline when a
+	-- view-once media message was destroyed; replayed on their next connect.
+	CREATE TABLE IF NOT EXISTS pending_deletions (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		message_id TEXT NOT NULL,
+		client_message_id TEXT NOT NULL DEFAULT '',
+		room_id TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+	CREATE INDEX IF NOT EXISTS idx_pending_deletions_user ON pending_deletions(user_id);
+
 	CREATE INDEX IF NOT EXISTS idx_messages_receiver_undelivered
 		ON messages(receiver_id);
 	CREATE INDEX IF NOT EXISTS idx_one_time_prekeys_available
