@@ -187,6 +187,7 @@ func RunMigrations(pool *pgxpool.Pool) {
 	ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_message_id TEXT;
 	ALTER TABLE messages ADD COLUMN IF NOT EXISTS encryption_key TEXT NOT NULL DEFAULT '';
 	ALTER TABLE messages ADD COLUMN IF NOT EXISTS encryption_iv TEXT NOT NULL DEFAULT '';
+	ALTER TABLE messages ADD COLUMN IF NOT EXISTS signal_message_type INT NOT NULL DEFAULT 0;
 	ALTER TABLE file_transfers ADD COLUMN IF NOT EXISTS content_type VARCHAR(50) NOT NULL DEFAULT '';
 	ALTER TABLE file_transfers ADD COLUMN IF NOT EXISTS content_subtype VARCHAR(50) NOT NULL DEFAULT '';
 	ALTER TABLE file_transfers ADD COLUMN IF NOT EXISTS caption TEXT NOT NULL DEFAULT '';

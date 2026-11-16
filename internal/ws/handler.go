@@ -21,10 +21,10 @@ var upgrader = websocket.Upgrader{
 }
 
 type Handler struct {
-	hub        *Hub
-	authSvc    *services.AuthService
-	msgSvc     *services.MessageService
-	fileSvc    *services.FileService
+	hub     *Hub
+	authSvc *services.AuthService
+	msgSvc  *services.MessageService
+	fileSvc *services.FileService
 }
 
 func NewHandler(hub *Hub, authSvc *services.AuthService, msgSvc *services.MessageService, fileSvc *services.FileService) *Handler {
@@ -202,7 +202,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, client *Client, payload
 		msgType = "location"
 	}
 
-	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, msgType)
+	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, msgType, 0)
 	if err != nil {
 		log.Printf("Failed to store message: %v", err)
 		return
@@ -233,7 +233,7 @@ func (h *Handler) handleFileMessage(ctx context.Context, client *Client, payload
 		return
 	}
 
-	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, "file")
+	msg, err := h.msgSvc.StoreMessage(ctx, payload.ClientMessageID, room.ID, client.UserID, payload.ReceiverID, payload.Ciphertext, payload.EncryptionKey, payload.EncryptionIV, "file", payload.SignalMessageType)
 	if err != nil {
 		log.Printf("Failed to store file message: %v", err)
 		return

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/filetransfer/backend/internal/config"
 	"github.com/filetransfer/backend/internal/db"
 	"github.com/filetransfer/backend/internal/handlers"
 	"github.com/filetransfer/backend/internal/middleware"
+	"github.com/filetransfer/backend/internal/models"
 	"github.com/filetransfer/backend/internal/services"
 	"github.com/filetransfer/backend/internal/ws"
 )
@@ -25,6 +28,8 @@ func main() {
 	keySvc := services.NewKeyService(pool)
 	msgSvc := services.NewMessageService(pool)
 	fileSvc := services.NewFileService(pool, cfg.AWSRegion, cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.S3Bucket)
+	fileSvc.SetLimits(cfg.MaxFileSizeBytes, time.Duration(cfg.FileTTLHours)*time.Hour)
+	go fileSvc.RunJanitor(context.Background(), 30*time.Minute)
 
 	// WebSocket hub
 	hub := ws.NewHub()
@@ -37,6 +42,15 @@ func main() {
 	multipartHandler := handlers.NewMultipartHandler(fileSvc)
 	msgHandler := handlers.NewMessageHandler(msgSvc, fileSvc)
 	statusHandler := handlers.NewStatusHandler(wsHandler)
+	configHandler := handlers.NewConfigHandler(models.ClientConfig{
+		MaxFileSizeBytes: cfg.MaxFileSizeBytes,
+		MinFileSizeBytes: cfg.MinFileSizeBytes,
+		MaxFilesPerSend:  cfg.MaxFilesPerSend,
+		MaxFileNameBytes: cfg.MaxFileNameBytes,
+		ThumbnailMaxB:    cfg.ThumbnailMaxB,
+		ThumbnailMaxPx:   cfg.ThumbnailMaxPx,
+		FileTTLHours:     cfg.FileTTLHours,
+	})
 
 	// Auth middleware
 	authMW := middleware.AuthMiddleware(authSvc)
@@ -64,6 +78,8 @@ func main() {
 	protected.HandleFunc("POST /api/files/multipart/initiate", multipartHandler.Initiate)
 	protected.HandleFunc("POST /api/files/multipart/complete", multipartHandler.Complete)
 	protected.HandleFunc("POST /api/files/multipart/abort", multipartHandler.Abort)
+	protected.HandleFunc("POST /api/files/multipart/presign-parts", multipartHandler.PresignParts)
+	protected.HandleFunc("GET /api/config", configHandler.Get)
 	protected.HandleFunc("POST /api/files/multipart/download", multipartHandler.Download)
 	protected.HandleFunc("GET /api/files/multipart/{uploadId}/parts", multipartHandler.ListParts)
 	protected.HandleFunc("DELETE /api/files/{fileId}", multipartHandler.Delete)

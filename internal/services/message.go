@@ -106,14 +106,17 @@ func (s *MessageService) GetRoomsForUser(ctx context.Context, userID string) ([]
 }
 
 // StoreMessage saves an encrypted message and returns the created message.
-func (s *MessageService) StoreMessage(ctx context.Context, clientMessageID, roomID, senderID, receiverID, ciphertext, encryptionKey, encryptionIV, msgType string) (*models.Message, error) {
+// StoreMessage persists a message. signalMessageType is > 0 when ciphertext is a
+// Signal message (the body and, for files, the file key are then sealed for the
+// receiver and the server holds no key); it is 0 for legacy messages.
+func (s *MessageService) StoreMessage(ctx context.Context, clientMessageID, roomID, senderID, receiverID, ciphertext, encryptionKey, encryptionIV, msgType string, signalMessageType int) (*models.Message, error) {
 	var msg models.Message
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO messages (id, client_message_id, room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, delivered, read_at, created_at
-	`, clientMessageID, roomID, senderID, receiverID, ciphertext, encryptionKey, encryptionIV, msgType,
-	).Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt)
+		INSERT INTO messages (id, client_message_id, room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type, delivered, read_at, created_at
+	`, clientMessageID, roomID, senderID, receiverID, ciphertext, encryptionKey, encryptionIV, msgType, signalMessageType,
+	).Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.SignalMessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +127,9 @@ func (s *MessageService) StoreMessage(ctx context.Context, clientMessageID, room
 func (s *MessageService) GetMessageByID(ctx context.Context, messageID string) (*models.Message, error) {
 	var msg models.Message
 	err := s.db.QueryRow(ctx, `
-		SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, delivered, read_at, created_at
+		SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type, delivered, read_at, created_at
 		FROM messages WHERE id = $1
-	`, messageID).Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt)
+	`, messageID).Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.SignalMessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +147,7 @@ func (s *MessageService) MarkDelivered(ctx context.Context, messageID string) er
 // GetPendingMessages returns all undelivered messages for a user (offline queue).
 func (s *MessageService) GetPendingMessages(ctx context.Context, receiverID string) ([]models.Message, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, delivered, read_at, created_at
+		SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type, delivered, read_at, created_at
 		FROM messages
 		WHERE receiver_id = $1 AND delivered = FALSE
 		ORDER BY created_at ASC
@@ -157,7 +160,7 @@ func (s *MessageService) GetPendingMessages(ctx context.Context, receiverID stri
 	var messages []models.Message
 	for rows.Next() {
 		var msg models.Message
-		if err := rows.Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.SignalMessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt); err != nil {
 			return nil, err
 		}
 		messages = append(messages, msg)
@@ -173,7 +176,7 @@ func (s *MessageService) GetMessagesByRoom(ctx context.Context, roomID string, l
 
 	if cursor == "" {
 		query = `
-			SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, delivered, read_at, created_at
+			SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type, delivered, read_at, created_at
 			FROM messages
 			WHERE room_id = $1
 			ORDER BY created_at DESC
@@ -181,7 +184,7 @@ func (s *MessageService) GetMessagesByRoom(ctx context.Context, roomID string, l
 		args = []any{roomID, limit}
 	} else {
 		query = `
-			SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, delivered, read_at, created_at
+			SELECT id, COALESCE(client_message_id, ''), room_id, sender_id, receiver_id, ciphertext, encryption_key, encryption_iv, message_type, signal_message_type, delivered, read_at, created_at
 			FROM messages
 			WHERE room_id = $1 AND created_at < (SELECT created_at FROM messages WHERE id = $3)
 			ORDER BY created_at DESC
@@ -198,7 +201,7 @@ func (s *MessageService) GetMessagesByRoom(ctx context.Context, roomID string, l
 	var messages []models.Message
 	for rows.Next() {
 		var msg models.Message
-		if err := rows.Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.ClientMessageID, &msg.RoomID, &msg.SenderID, &msg.ReceiverID, &msg.Ciphertext, &msg.EncryptionKey, &msg.EncryptionIV, &msg.MessageType, &msg.SignalMessageType, &msg.Delivered, &msg.ReadAt, &msg.CreatedAt); err != nil {
 			return nil, err
 		}
 		messages = append(messages, msg)
@@ -475,18 +478,19 @@ func (s *MessageService) GetPendingSecureFiles(ctx context.Context, receiverID s
 // the REST messages list — keeping every path in sync with the same keys.
 func (s *MessageService) BuildMessagePayload(ctx context.Context, msg *models.Message) map[string]any {
 	payload := map[string]any{
-		"id":                msg.ID,
-		"client_message_id": msg.ClientMessageID,
-		"room_id":           msg.RoomID,
-		"sender_id":         msg.SenderID,
-		"receiver_id":       msg.ReceiverID,
-		"message_type":      msg.MessageType,
-		"ciphertext":        msg.Ciphertext,
-		"encryption_key":    msg.EncryptionKey,
-		"encryption_iv":     msg.EncryptionIV,
-		"delivered":         msg.Delivered,
-		"read_at":           msg.ReadAt,
-		"created_at":        msg.CreatedAt,
+		"id":                  msg.ID,
+		"client_message_id":   msg.ClientMessageID,
+		"room_id":             msg.RoomID,
+		"sender_id":           msg.SenderID,
+		"receiver_id":         msg.ReceiverID,
+		"message_type":        msg.MessageType,
+		"ciphertext":          msg.Ciphertext,
+		"encryption_key":      msg.EncryptionKey,
+		"encryption_iv":       msg.EncryptionIV,
+		"signal_message_type": msg.SignalMessageType,
+		"delivered":           msg.Delivered,
+		"read_at":             msg.ReadAt,
+		"created_at":          msg.CreatedAt,
 	}
 
 	if sender, err := s.GetUserByID(ctx, msg.SenderID); err == nil && sender != nil {

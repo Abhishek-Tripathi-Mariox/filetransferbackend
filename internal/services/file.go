@@ -21,6 +21,34 @@ type FileService struct {
 	presignClient *s3.PresignClient
 	bucket        string
 	region        string
+
+	// Attachment limits (see SetLimits); defaults apply until it is called.
+	maxPlainSize int64
+	fileTTL      time.Duration
+}
+
+// SetLimits configures the largest plaintext attachment and how long an
+// undownloaded attachment is kept before the janitor deletes it.
+func (s *FileService) SetLimits(maxPlainSize int64, fileTTL time.Duration) {
+	s.maxPlainSize = maxPlainSize
+	s.fileTTL = fileTTL
+}
+
+// maxCiphertextSize allows for the client's size padding (<= ~5%) and the
+// per-64KiB-chunk GCM tags on top of the plaintext limit.
+func (s *FileService) maxCiphertextSize() int64 {
+	plain := s.maxPlainSize
+	if plain <= 0 {
+		plain = 2 * 1024 * 1024 * 1024
+	}
+	return plain + plain/16 + 1024*1024
+}
+
+func (s *FileService) ttl() time.Duration {
+	if s.fileTTL <= 0 {
+		return 30 * 24 * time.Hour
+	}
+	return s.fileTTL
 }
 
 func NewFileService(db *pgxpool.Pool, region, accessKeyID, secretAccessKey, bucket string) *FileService {
@@ -191,6 +219,9 @@ func (s *FileService) DeleteUploadObjects(ctx context.Context, keys ...string) {
 			Key:    aws.String(key),
 		}); err != nil {
 			log.Printf("Warning: failed to delete S3 object %s: %v", key, err)
+			continue
 		}
+		_, _ = s.db.Exec(ctx,
+			`UPDATE sft_files SET deleted = TRUE, deleted_at = NOW() WHERE object_key = $1 AND NOT deleted`, key)
 	}
 }

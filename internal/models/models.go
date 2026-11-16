@@ -43,18 +43,21 @@ type Room struct {
 }
 
 type Message struct {
-	ID              string     `json:"id"`
-	ClientMessageID string     `json:"client_message_id"`
-	RoomID          string     `json:"room_id"`
-	SenderID        string     `json:"sender_id"`
-	ReceiverID      string     `json:"receiver_id"`
-	Ciphertext      string     `json:"ciphertext"`
-	EncryptionKey   string     `json:"encryption_key"`
-	EncryptionIV    string     `json:"encryption_iv"`
-	MessageType     string     `json:"message_type"` // "text" or "file"
-	Delivered       bool       `json:"delivered"`
-	ReadAt          *time.Time `json:"read_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
+	ID              string `json:"id"`
+	ClientMessageID string `json:"client_message_id"`
+	RoomID          string `json:"room_id"`
+	SenderID        string `json:"sender_id"`
+	ReceiverID      string `json:"receiver_id"`
+	Ciphertext      string `json:"ciphertext"`
+	EncryptionKey   string `json:"encryption_key"`
+	EncryptionIV    string `json:"encryption_iv"`
+	MessageType     string `json:"message_type"` // "text" or "file"
+	// SignalMessageType is 2 (whisper) or 3 (prekey) when Ciphertext is a Signal
+	// message sealed for the receiver, 0 for legacy messages.
+	SignalMessageType int        `json:"signal_message_type"`
+	Delivered         bool       `json:"delivered"`
+	ReadAt            *time.Time `json:"read_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 type FileTransfer struct {
@@ -177,11 +180,36 @@ type MultipartCompleteRequest struct {
 }
 
 type MultipartCompleteResponse struct {
-	Status    string `json:"status"`
-	FileID    string `json:"file_id"`
-	ObjectKey string `json:"object_key"`
-	Bucket    string `json:"bucket"`
-	SizeBytes int64  `json:"size_bytes"`
+	Status    string     `json:"status"`
+	FileID    string     `json:"file_id"`
+	ObjectKey string     `json:"object_key"`
+	Bucket    string     `json:"bucket"`
+	SizeBytes int64      `json:"size_bytes"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// MultipartPresignPartsRequest asks for fresh upload URLs for some parts of an
+// in-progress upload (used when resuming after the first URLs expired).
+type MultipartPresignPartsRequest struct {
+	UploadID    string `json:"upload_id"`
+	PartNumbers []int  `json:"part_numbers"`
+}
+
+type MultipartPresignPartsResponse struct {
+	UploadID         string             `json:"upload_id"`
+	ExpiresInSeconds int                `json:"expires_in_seconds"`
+	Parts            []MultipartPartURL `json:"parts"`
+}
+
+// ClientConfig is served by GET /api/config so limits can change without an app release.
+type ClientConfig struct {
+	MaxFileSizeBytes int64 `json:"max_file_size_bytes"`
+	MinFileSizeBytes int64 `json:"min_file_size_bytes"`
+	MaxFilesPerSend  int   `json:"max_files_per_send"`
+	MaxFileNameBytes int   `json:"max_file_name_bytes"`
+	ThumbnailMaxB    int   `json:"thumbnail_max_bytes"`
+	ThumbnailMaxPx   int   `json:"thumbnail_max_px"`
+	FileTTLHours     int   `json:"file_ttl_hours"`
 }
 
 type MultipartAbortRequest struct {
@@ -253,19 +281,22 @@ type SendFilePayload struct {
 	Ciphertext      string `json:"ciphertext"`
 	EncryptionKey   string `json:"encryption_key"`
 	EncryptionIV    string `json:"encryption_iv"`
-	EncryptedS3URL  string `json:"encrypted_s3_url"`
-	S3Key           string `json:"s3_key"`
-	FileName        string `json:"file_name"`
-	FileSize        int64  `json:"file_size"`
-	ContentType     string `json:"content_type"`
-	ContentSubtype  string `json:"content_subtype"`
-	Caption         string `json:"caption"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	Duration        int    `json:"duration"`
-	Thumbnail       string `json:"thumbnail"`
-	Bucket          string `json:"bucket"`
-	Region          string `json:"region"`
+	// SignalMessageType > 0: Ciphertext is the Signal-sealed file record holding the
+	// file key and all metadata; the plaintext metadata fields below are left empty.
+	SignalMessageType int    `json:"signal_message_type"`
+	EncryptedS3URL    string `json:"encrypted_s3_url"`
+	S3Key             string `json:"s3_key"`
+	FileName          string `json:"file_name"`
+	FileSize          int64  `json:"file_size"`
+	ContentType       string `json:"content_type"`
+	ContentSubtype    string `json:"content_subtype"`
+	Caption           string `json:"caption"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	Duration          int    `json:"duration"`
+	Thumbnail         string `json:"thumbnail"`
+	Bucket            string `json:"bucket"`
+	Region            string `json:"region"`
 }
 
 type AckPayload struct {
@@ -301,6 +332,6 @@ type MessageWithFile struct {
 // RoomWithUnread is used for room list with unread badge counts
 type RoomWithUnread struct {
 	Room
-	UnreadCount int    `json:"unread_count"`
+	UnreadCount int      `json:"unread_count"`
 	LastMessage *Message `json:"last_message,omitempty"`
 }

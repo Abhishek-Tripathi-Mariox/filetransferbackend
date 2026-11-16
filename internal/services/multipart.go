@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -26,7 +27,7 @@ const (
 	downloadURLTTL     = 2 * time.Hour
 	multipartMinPartMB = 4
 	multipartMaxParts  = 10000
-	maxFileSize        = int64(5) * 1024 * 1024 * 1024 // 5 GiB cap
+	multipartResumeTTL = 24 * time.Hour // an unfinished upload can be resumed this long
 )
 
 var allowedPartSizesMB = map[int]bool{4: true, 8: true, 16: true}
@@ -43,12 +44,14 @@ func (s *FileService) InitiateMultipart(ctx context.Context, senderID string, re
 	if req.FileSize <= 0 {
 		return nil, 400, errors.New("file_size must be positive")
 	}
-	if req.FileSize > maxFileSize {
-		return nil, 413, fmt.Errorf("file_size exceeds cap of %d bytes", maxFileSize)
+	if req.FileSize > s.maxCiphertextSize() {
+		return nil, 413, fmt.Errorf("file_size exceeds cap of %d bytes", s.maxCiphertextSize())
 	}
-	if req.ContentType == "" {
-		req.ContentType = "application/octet-stream"
+	if int64(req.PartCount-1)*int64(req.PartSize) >= req.FileSize || int64(req.PartCount)*int64(req.PartSize) < req.FileSize {
+		return nil, 400, errors.New("part_count does not match file_size / part_size")
 	}
+	// Attachments are client-encrypted: the server never records their real type.
+	req.ContentType = "application/octet-stream"
 
 	objectKey := fmt.Sprintf("uploads/%s/%s", senderID, randomKey())
 
@@ -62,7 +65,7 @@ func (s *FileService) InitiateMultipart(ctx context.Context, senderID string, re
 	}
 
 	uploadID := aws.ToString(out.UploadId)
-	expiresAt := time.Now().Add(24 * time.Hour)
+	expiresAt := time.Now().Add(multipartResumeTTL)
 
 	var recipientID any
 	if req.RecipientID != "" {
@@ -131,8 +134,9 @@ func (s *FileService) CompleteMultipart(ctx context.Context, callerID string, re
 		// idempotent: return existing file row
 		var fileID string
 		var size int64
-		_ = s.db.QueryRow(ctx, `SELECT id, size_bytes FROM sft_files WHERE object_key = $1`, objectKey).Scan(&fileID, &size)
-		return &models.MultipartCompleteResponse{Status: "ok", FileID: fileID, ObjectKey: objectKey, Bucket: bucket, SizeBytes: size}, 200, nil
+		var expiresAt *time.Time
+		_ = s.db.QueryRow(ctx, `SELECT id, size_bytes, expires_at FROM sft_files WHERE object_key = $1`, objectKey).Scan(&fileID, &size, &expiresAt)
+		return &models.MultipartCompleteResponse{Status: "ok", FileID: fileID, ObjectKey: objectKey, Bucket: bucket, SizeBytes: size, ExpiresAt: expiresAt}, 200, nil
 	}
 
 	if len(req.Parts) == 0 {
@@ -167,12 +171,13 @@ func (s *FileService) CompleteMultipart(ctx context.Context, callerID string, re
 	}
 
 	var fileID string
+	expiresAt := time.Now().Add(s.ttl()).UTC()
 	err = s.db.QueryRow(ctx, `
 		INSERT INTO sft_files (object_key, bucket, sender_id, recipient_id, size_bytes, expires_at)
-		VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '30 days')
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (object_key) DO UPDATE SET size_bytes = EXCLUDED.size_bytes
-		RETURNING id
-	`, objectKey, bucket, senderID, recipientID, sizeBytes).Scan(&fileID)
+		RETURNING id, expires_at
+	`, objectKey, bucket, senderID, recipientID, sizeBytes, expiresAt).Scan(&fileID, &expiresAt)
 	if err != nil {
 		return nil, 500, fmt.Errorf("persist sft_file: %w", err)
 	}
@@ -190,7 +195,122 @@ func (s *FileService) CompleteMultipart(ctx context.Context, callerID string, re
 		ObjectKey: objectKey,
 		Bucket:    bucket,
 		SizeBytes: sizeBytes,
+		ExpiresAt: &expiresAt,
 	}, 200, nil
+}
+
+// PresignParts returns fresh upload URLs for the given parts of an in-progress
+// upload, so a client can resume after the URLs from Initiate have expired.
+func (s *FileService) PresignParts(ctx context.Context, callerID string, req models.MultipartPresignPartsRequest) (*models.MultipartPresignPartsResponse, int, error) {
+	var senderID, status, bucket, objectKey string
+	var partCount int
+	err := s.db.QueryRow(ctx, `
+		SELECT sender_id, status, bucket, object_key, part_count
+		FROM multipart_uploads WHERE upload_id = $1
+	`, req.UploadID).Scan(&senderID, &status, &bucket, &objectKey, &partCount)
+	if err != nil {
+		return nil, 404, errors.New("upload_id not found")
+	}
+	if senderID != callerID {
+		return nil, 403, errors.New("only the original sender may upload parts")
+	}
+	if status != "in_progress" {
+		return nil, 409, fmt.Errorf("upload is %s", status)
+	}
+	if len(req.PartNumbers) == 0 || len(req.PartNumbers) > multipartMaxParts {
+		return nil, 400, errors.New("part_numbers is required")
+	}
+
+	parts := make([]models.MultipartPartURL, 0, len(req.PartNumbers))
+	for _, n := range req.PartNumbers {
+		if n < 1 || n > partCount {
+			return nil, 400, fmt.Errorf("part_number %d out of range", n)
+		}
+		out, err := s.presignClient.PresignUploadPart(ctx, &s3.UploadPartInput{
+			Bucket:     aws.String(bucket),
+			Key:        aws.String(objectKey),
+			UploadId:   aws.String(req.UploadID),
+			PartNumber: aws.Int32(int32(n)),
+		}, s3.WithPresignExpires(multipartURLTTL))
+		if err != nil {
+			return nil, 500, fmt.Errorf("presign part %d: %w", n, err)
+		}
+		parts = append(parts, models.MultipartPartURL{PartNumber: n, PresignedURL: out.URL})
+	}
+	return &models.MultipartPresignPartsResponse{
+		UploadID:         req.UploadID,
+		ExpiresInSeconds: int(multipartURLTTL.Seconds()),
+		Parts:            parts,
+	}, 200, nil
+}
+
+// RunJanitor deletes attachments past their expiry and aborts uploads that were
+// never finished, every interval until ctx is cancelled.
+func (s *FileService) RunJanitor(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		s.cleanupExpired(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *FileService) cleanupExpired(ctx context.Context) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, bucket, object_key FROM sft_files
+		WHERE NOT deleted AND expires_at IS NOT NULL AND expires_at < NOW()
+		LIMIT 500`)
+	if err == nil {
+		type expired struct{ id, bucket, key string }
+		var list []expired
+		for rows.Next() {
+			var e expired
+			if rows.Scan(&e.id, &e.bucket, &e.key) == nil {
+				list = append(list, e)
+			}
+		}
+		rows.Close()
+		for _, e := range list {
+			if _, err := s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: aws.String(e.bucket), Key: aws.String(e.key),
+			}); err != nil {
+				continue
+			}
+			_, _ = s.db.Exec(ctx, `UPDATE sft_files SET deleted = TRUE, deleted_at = NOW() WHERE id = $1`, e.id)
+		}
+		if len(list) > 0 {
+			log.Printf("Janitor: deleted %d expired attachments", len(list))
+		}
+	}
+
+	rows, err = s.db.Query(ctx, `
+		SELECT upload_id, bucket, object_key FROM multipart_uploads
+		WHERE status = 'in_progress' AND expires_at < NOW()
+		LIMIT 500`)
+	if err == nil {
+		type stale struct{ id, bucket, key string }
+		var list []stale
+		for rows.Next() {
+			var u stale
+			if rows.Scan(&u.id, &u.bucket, &u.key) == nil {
+				list = append(list, u)
+			}
+		}
+		rows.Close()
+		for _, u := range list {
+			_, _ = s.s3Client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+				Bucket: aws.String(u.bucket), Key: aws.String(u.key), UploadId: aws.String(u.id),
+			})
+			_, _ = s.db.Exec(ctx, `UPDATE multipart_uploads SET status = 'expired' WHERE upload_id = $1`, u.id)
+		}
+		if len(list) > 0 {
+			log.Printf("Janitor: aborted %d stale uploads", len(list))
+		}
+	}
 }
 
 // AbortMultipart aborts the S3 upload and marks the row aborted. Idempotent.

@@ -116,3 +116,19 @@ func (h *MultipartHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, map[string]string{"status": "deleted"})
 }
+
+// POST /api/files/multipart/presign-parts
+func (h *MultipartHandler) PresignParts(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r.Context())
+	var req models.MultipartPresignPartsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	resp, status, err := h.fileSvc.PresignParts(r.Context(), userID, req)
+	if err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, status, resp)
+}

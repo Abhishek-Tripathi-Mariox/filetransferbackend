@@ -125,10 +125,10 @@ func (s *KeyService) UploadKeys(ctx context.Context, userID string, req models.U
 	}
 
 	return map[string]any{
-		"identity_key":            true,
-		"signed_prekey":           true,
-		"one_time_prekeys_count":  len(req.OneTimePreKeys),
-		"kyber_prekeys_count":     len(req.KyberPreKeys),
+		"identity_key":           true,
+		"signed_prekey":          true,
+		"one_time_prekeys_count": len(req.OneTimePreKeys),
+		"kyber_prekeys_count":    len(req.KyberPreKeys),
 	}, nil
 }
 
